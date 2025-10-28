@@ -17,8 +17,9 @@ import shutil
 from datetime import *
 import xlsxwriter
 
+
 class SaveWorkerSignals(QObject):
-    success = Signal(int)  # emits capture_id on success
+    success = Signal(int)  # emits magazine_id on success
     error = Signal(str)    # emits error message on failure
 
 
@@ -34,11 +35,11 @@ class SaveCaptureWorker(QRunnable):
     def run(self):
         try:
             db = CaptureDB()
-            capture_id = db.save_capture_set(self.operator, self.mag_from, self.mag_to, self.images_and_descriptions)
+            magazine_id = db.save_capture_set(self.operator, self.mag_from, self.mag_to, self.images_and_descriptions)
         except Exception as e:
             self.signals.error.emit(str(e))
         else:
-            self.signals.success.emit(capture_id)
+            self.signals.success.emit(magazine_id)
 
 
 class MainWindow(QMainWindow):
@@ -87,11 +88,14 @@ class MainWindow(QMainWindow):
 
         self.thread_pool = QThreadPool.globalInstance()
 
-        # Keep session-persistent operator value
+        # Keep session-persistent operator and magazine values
         self.session_operator = self.ui.operator_lineEdit.text()
-        # Keep track of magazines
         self.session_magazine_from = self.ui.magazine_from.text()
         self.session_magazine_to = self.ui.magazine_to.text()
+
+        # NEW: Initialize magazine capture count and limit attributes
+        self.magazine_capture_count = 0
+        self.magazine_capture_limit = 20
 
     # Window persistence
     def read_settings(self):
@@ -117,15 +121,27 @@ class MainWindow(QMainWindow):
 
     def toggle_capture(self):
         self.ui.action_button.setEnabled(False)
+        self.ui.operator_lineEdit.setEnabled(False)
+        self.ui.magazine_from.setEnabled(False)
+        self.ui.magazine_to.setEnabled(False)
+        self.ui.wire_combo.setEnabled(False)
+        self.ui.export_button.setEnabled(False)
         QTimer.singleShot(150, lambda: self.ui.action_button.setEnabled(True))
         if self.is_capturing:
             self.stop_capture()
             self.is_capturing = False
         else:
-            self.start_auto_capture()
             self.is_capturing = True
+            self.start_auto_capture()
 
     def start_auto_capture(self):
+        if not self.is_capturing:
+            # Don't start capture if flagged stopped
+            return
+        if self.magazine_capture_count >= self.magazine_capture_limit:
+            QMessageBox.information(self, "Capture Limit Reached",
+                                    f"Maximum automatic magazine captures ({self.magazine_capture_limit}) reached.")
+            return
         if self.is_paused:
             self.capture_timer.start()
             self.is_paused = False
@@ -139,6 +155,8 @@ class MainWindow(QMainWindow):
         if self.capture_timer.isActive():
             self.capture_timer.stop()
             self.is_paused = True
+        if self.wait_timer.isActive():
+            self.wait_timer.stop()
 
     def capture_image(self):
         if self.captured_count >= 10:
@@ -177,7 +195,6 @@ class MainWindow(QMainWindow):
         self.captured_images.append(raw_frame)
         self.captured_count += 1
 
-
     def reset_images(self):
         for i in range(1, 11):
             label = getattr(self.ui, f"image_{i}", None)
@@ -206,15 +223,28 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(self.on_save_error)
         self.thread_pool.start(worker)
 
-    def on_save_success(self, capture_id):
-        print(f"Capture saved with id: {capture_id}")
-        # Reset images and UI after saving
+    def on_save_success(self, magazine_id):
+        print(f"Capture saved with magazine id: {magazine_id}")
+        self.magazine_capture_count += 1
+        if self.magazine_capture_count >= self.magazine_capture_limit:
+            self.capture_timer.stop()
+            self.wait_timer.stop()
+            QMessageBox.information(self, "Capture Limit Reached",
+                                    f"Reached maximum automatic magazine captures ({self.magazine_capture_limit}). Stopping further captures.")
+            self.is_capturing = False
+            self.ui.action_button.setEnabled(True)
+            self.ui.operator_lineEdit.setEnabled(True)
+            self.ui.magazine_from.setEnabled(True)
+            self.ui.magazine_to.setEnabled(True)
+            self.ui.wire_combo.setEnabled(True)
+            self.ui.export_button.setEnabled(True)
+
         self.reset_images()
         self.captured_count = 0
-        
+
+
     def on_save_error(self, error_msg):
         QMessageBox.warning(self, "Save Error", f"Failed to save capture set:\n{error_msg}")
-        # Do not reset magazines or operator; keep UI consistent
 
     def get_wire(self, selected_text):
         if selected_text == "NO. OF WIRE/S":
@@ -257,7 +287,7 @@ class MainWindow(QMainWindow):
             cv2.rectangle(out, (int(x), int(y) - text_h - 8), (int(x) + text_w, int(y)), color, -1)
             cv2.putText(out, label, (int(x), int(y) - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
         return out
-    
+
     def on_export_button_clicked(self):
         msg_box = QMessageBox()
         msg_box.setWindowTitle("Select Export File Type")
@@ -295,38 +325,45 @@ class MainWindow(QMainWindow):
             all_data = []
             conn = sqlite3.connect(db.db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT id, operator, magazine_from, magazine_to, created_at FROM capture_set")
-            capture_sets = cursor.fetchall()
+            cursor.execute("SELECT id, operator, magazine_from, magazine_to, created_at FROM magazines")
+            magazines = cursor.fetchall()
 
-            for cap in capture_sets:
-                cap_id, operator, mag_from, mag_to, created_at = cap
-                cursor.execute("SELECT image_index, file_path, description, saved_at FROM capture_image WHERE capture_set_id=?", (cap_id,))
-                images = cursor.fetchall()
-
-                for img in images:
-                    image_index, file_path, description, saved_at = img
-                    all_data.append([
-                        cap_id,
-                        operator,
-                        mag_from,
-                        mag_to,
-                        created_at,
-                        image_index,
-                        os.path.basename(file_path),
-                        file_path,
-                        description,
-                        saved_at
-                    ])
+            for mag in magazines:
+                mag_id, operator, mag_from, mag_to, created_at = mag
+                cursor.execute("SELECT id, package_number FROM packages WHERE magazine_id = ?", (mag_id,))
+                packages = cursor.fetchall()
+                for pkg_id, pkg_num in packages:
+                    cursor.execute(
+                        "SELECT stripe_number, file_path, description, saved_at FROM stripes WHERE package_id = ? ORDER BY stripe_number ASC",
+                        (pkg_id,)
+                    )
+                    stripes = cursor.fetchall()
+                    for stripe in stripes:
+                        stripe_num, file_path, description, saved_at = stripe
+                        all_data.append([
+                            mag_id,
+                            operator,
+                            mag_from,
+                            mag_to,
+                            created_at,
+                            pkg_num,
+                            stripe_num,
+                            os.path.basename(file_path),
+                            file_path,
+                            description,
+                            saved_at,
+                        ])
 
             conn.close()
 
             headers = [
-                "Capture ID",
+                "Magazine ID",
                 "Operator",
                 "Magazine From",
                 "Magazine To",
-                "Capture Created At",
-                "Image Index",
+                "Magazine Created At",
+                "Package Number",
+                "Stripe Number",
                 "Image File",
                 "Image Path",
                 "Description",
@@ -337,11 +374,11 @@ class MainWindow(QMainWindow):
                 import csv
                 with open(save_path, mode='w', newline='', encoding='utf-8') as csvfile:
                     writer = csv.writer(csvfile)
-                    # Write header excluding Image Path
+                    # Write header excluding "Image Path"
                     writer.writerow([h for h in headers if h != "Image Path"])
                     for row in all_data:
-                        # Exclude Image Path (index 7)
-                        row_out = row[:7] + row[8:]
+                        # Exclude Image Path (index 8)
+                        row_out = row[:8] + row[9:]
                         writer.writerow(row_out)
 
             else:
@@ -350,16 +387,17 @@ class MainWindow(QMainWindow):
 
                 # Define column widths explicitly (excluding Image Path which is hidden)
                 col_widths = {
-                    0: 10,  # Capture ID
-                    1: 40,  # Operator
-                    2: 20,  # Magazine From
-                    3: 20,  # Magazine To
-                    4: 25,  # Capture Created At
-                    5: 11,  # Image Index
-                    6: 25,  # Image File
-                    7: 40, #Image Path - will be hidden
-                    8: 40,  # Description
-                    9: 40   # Image Saved At
+                    0: 10,   # Magazine ID
+                    1: 40,   # Operator
+                    2: 20,   # Magazine From
+                    3: 20,   # Magazine To
+                    4: 25,   # Magazine Created At
+                    5: 12,   # Package Number
+                    6: 12,   # Stripe Number
+                    7: 25,   # Image File
+                    8: 40,   # Image Path (hidden)
+                    9: 40,   # Description
+                    10: 40   # Image Saved At
                 }
 
                 # Write header row (excluding "Image Path")
@@ -370,20 +408,19 @@ class MainWindow(QMainWindow):
                         worksheet.set_column(col, col, col_widths[i])
                         col += 1
 
-
-                # Write data rows excluding Image Path (index 7)
+                # Write data rows excluding Image Path (index 8)
                 for row_idx, row in enumerate(all_data, start=1):
                     col = 0
                     for i, cell_value in enumerate(row):
-                        if i != 7:  # Skip Image Path
+                        if i != 8:  # Skip Image Path
                             worksheet.write(row_idx, col, cell_value)
                             col += 1
 
-                    # Set row height for image rows if needed
+                    # Set row height for image rows
                     worksheet.set_row(row_idx, 90)
 
                     # Insert image if file exists (scaled)
-                    img_path = row[7]
+                    img_path = row[8]
                     if os.path.isfile(img_path):
                         img = cv2.imread(img_path)
                         if img is not None:
@@ -393,15 +430,15 @@ class MainWindow(QMainWindow):
                             x_scale = min(1, cell_width_pixels / w)
                             y_scale = min(1, cell_height_pixels / h)
                             scale = min(x_scale, y_scale)
-                            # Image File column index is 6, but column in sheet excludes Image Path => 6 in sheet
-                            worksheet.insert_image(row_idx, 6, img_path, {'x_scale': scale, 'y_scale': scale, 'object_position': 1})
+                            # Image File column index is 7, but excludes Image Path => index 7 in sheet
+                            worksheet.insert_image(row_idx, 7, img_path, {'x_scale': scale, 'y_scale': scale, 'object_position': 1})
 
                 workbook.close()
 
             QMessageBox.information(self, "Export Successful", f"Data exported successfully to:\n{save_path}")
+
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Failed to export data:\n{str(e)}")
-
 
     def on_frame(self, qimg):
         pix = QPixmap.fromImage(qimg)
