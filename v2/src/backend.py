@@ -1,6 +1,7 @@
 import sys
 import cv2
 import numpy as np
+import os
 from PySide6.QtWidgets import *
 from PySide6.QtGui import *
 from PySide6.QtCore import *
@@ -10,17 +11,14 @@ from PySide6.QtOpenGLWidgets import *
 from OpenGL.GL import *
 from camera_module import CameraThread
 from db import CaptureDB
-import pandas as pd
-import os
 import sqlite3
-import shutil
-from datetime import *
 import xlsxwriter
-
+from ultralytics import YOLO
+import torch
 
 class SaveWorkerSignals(QObject):
-    success = Signal(int)  # emits magazine_id on success
-    error = Signal(str)    # emits error message on failure
+    success = Signal(int)
+    error = Signal(str)
 
 
 class SaveCaptureWorker(QRunnable):
@@ -53,12 +51,17 @@ class MainWindow(QMainWindow):
         db = CaptureDB()
         db.init_db()
 
+        # Load YOLO model from local script directory
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(script_dir, "best.pt")
+        self.model = YOLO(model_path)
+        self.model.to('cuda' if torch.cuda.is_available() else 'cpu')
         # Window settings persistence
         self.settings = QSettings("IVIS", "WireDetectionThesis")
         self.read_settings()
 
-        self.cam_thread = CameraThread(camera_index=0, fps=25, width=1190, height=780)
-        self.cam_thread.frame_ready.connect(self.on_frame)
+        self.cam_thread = CameraThread(camera_index=1, fps=25, width=1190, height=780)
+        self.cam_thread.raw_frame_ready.connect(self.on_frame)
         self.cam_thread.start()
 
         self.captured_images = []
@@ -93,11 +96,113 @@ class MainWindow(QMainWindow):
         self.session_magazine_from = self.ui.magazine_from.text()
         self.session_magazine_to = self.ui.magazine_to.text()
 
-        # NEW: Initialize magazine capture count and limit attributes
+        # Initialize magazine capture count and limit attributes
         self.magazine_capture_count = 0
         self.magazine_capture_limit = 20
 
-    # Window persistence
+    # Converts QImage to numpy ndarray in RGB format
+    def qimage_to_ndarray(self, qimg):
+        qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
+        width = qimg.width()
+        height = qimg.height()
+        ptr = qimg.constBits()
+        ptr = memoryview(ptr).cast('B')
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((height, width, 3))
+        return arr
+
+
+    # Annotate frame with detection boxes and labels
+    def annotate_frame(self, frame):
+        detections = getattr(self, 'current_detections', None)
+        out = frame.copy()
+        if not detections:
+            return out
+        for det in detections:
+            x, y, w, h = det['box']
+            cls = det.get('class', 'obj')
+            score = det.get('score', None)
+            color = (0, 255, 0)
+            cv2.rectangle(out, (int(x), int(y)), (int(x + w), int(y + h)), color, 2)
+            label = cls
+            if score is not None:
+                label = f"{cls}: {score:.2f}"
+            (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            cv2.rectangle(out, (int(x), int(y) - text_h - 8), (int(x) + text_w, int(y)), color, -1)
+            cv2.putText(out, label, (int(x), int(y) - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+        return out
+
+    # Method to run inference on incoming camera frames and display annotated results
+    def on_frame(self, frame):
+        # frame = self.qimage_to_ndarray(qimg)
+        if frame is None:
+            return
+
+        # -- Convert input to BGR for model (Ultralytics expects BGR) --
+        # If your qimage_to_ndarray already returns BGR, skip this conversion.
+        bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        # NOTE: consider running `self.model` in a worker thread instead of GUI thread.
+        try:
+            results = self.model(bgr_frame)[0]
+        except Exception as e:
+            # If inference fails, fall back to showing original frame
+            print("Inference error:", e)
+            display_rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        else:
+            # Try to get annotated image from results.plot()
+            try:
+                annotated = results.plot()
+            except Exception as e:
+                print("Plot error:", e)
+                annotated = None
+
+            if isinstance(annotated, np.ndarray):
+                # Ensure contiguous memory
+                annotated = np.ascontiguousarray(annotated)
+
+                # If float in [0,1] scale to 0..255
+                if np.issubdtype(annotated.dtype, np.floating):
+                    annotated = np.clip(annotated * 255.0, 0, 255).astype(np.uint8)
+                elif annotated.dtype != np.uint8:
+                    annotated = annotated.astype(np.uint8)
+
+                # Handle channel counts: prefer 3-channel BGR -> convert to RGB
+                if annotated.ndim == 3 and annotated.shape[2] == 3:
+                    # Most plotting functions produce BGR; convert to RGB for QImage
+                    display_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                elif annotated.ndim == 2:
+                    # grayscale -> to RGB
+                    display_rgb = cv2.cvtColor(annotated, cv2.COLOR_GRAY2RGB)
+                elif annotated.ndim == 3 and annotated.shape[2] == 4:
+                    # BGRA -> convert to RGBA then to RGB (drop alpha)
+                    rgba = cv2.cvtColor(annotated, cv2.COLOR_BGRA2RGBA)
+                    display_rgb = cv2.cvtColor(rgba, cv2.COLOR_RGBA2RGB)
+                else:
+                    # unexpected format -> fallback to original frame
+                    display_rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+            else:
+                # No annotated array -> show original frame
+                display_rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+
+        # Ensure contiguous and uint8
+        display_rgb = np.ascontiguousarray(display_rgb)
+        if display_rgb.dtype != np.uint8:
+            display_rgb = np.clip(display_rgb, 0, 255).astype(np.uint8)
+
+        h, w = display_rgb.shape[:2]
+        ch = 3  # we guarantee RGB 3 channels above
+        bytes_per_line = ch * w
+
+        # Create QImage from numpy buffer. Use .copy() to avoid lifetime issues if necessary.
+        qimage = QImage(display_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+        pix = QPixmap.fromImage(qimage)
+
+        target_w = self.ui.live_camera.width()
+        target_h = self.ui.live_camera.height()
+        scaled = pix.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.ui.live_camera.setPixmap(scaled)
+
+
     def read_settings(self):
         pos = self.settings.value("pos", None)
         size = self.settings.value("size", None)
@@ -124,7 +229,6 @@ class MainWindow(QMainWindow):
         self.ui.operator_lineEdit.setEnabled(False)
         self.ui.magazine_from.setEnabled(False)
         self.ui.magazine_to.setEnabled(False)
-        self.ui.wire_combo.setEnabled(False)
         self.ui.export_button.setEnabled(False)
         QTimer.singleShot(150, lambda: self.ui.action_button.setEnabled(True))
         if self.is_capturing:
@@ -236,12 +340,10 @@ class MainWindow(QMainWindow):
             self.ui.operator_lineEdit.setEnabled(True)
             self.ui.magazine_from.setEnabled(True)
             self.ui.magazine_to.setEnabled(True)
-            self.ui.wire_combo.setEnabled(True)
             self.ui.export_button.setEnabled(True)
 
         self.reset_images()
         self.captured_count = 0
-
 
     def on_save_error(self, error_msg):
         QMessageBox.warning(self, "Save Error", f"Failed to save capture set:\n{error_msg}")
@@ -268,25 +370,6 @@ class MainWindow(QMainWindow):
 
     def get_good_units(self):
         return self.ui.good_unit_label.text()
-
-    def annotate_frame(self, frame):
-        detections = getattr(self, 'current_detections', None)
-        out = frame.copy()
-        if not detections:
-            return out
-        for det in detections:
-            x, y, w, h = det['box']
-            cls = det.get('class', 'obj')
-            score = det.get('score', None)
-            color = (0, 255, 0)
-            cv2.rectangle(out, (int(x), int(y)), (int(x + w), int(y + h)), color, 2)
-            label = cls
-            if score is not None:
-                label = f"{cls}: {score:.2f}"
-            (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            cv2.rectangle(out, (int(x), int(y) - text_h - 8), (int(x) + text_w, int(y)), color, -1)
-            cv2.putText(out, label, (int(x), int(y) - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
-        return out
 
     def on_export_button_clicked(self):
         msg_box = QMessageBox()
@@ -319,8 +402,6 @@ class MainWindow(QMainWindow):
             save_path += default_ext
 
         try:
-            import cv2
-            import xlsxwriter
             db = CaptureDB()
             all_data = []
             conn = sqlite3.connect(db.db_path)
@@ -439,13 +520,6 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.warning(self, "Export Failed", f"Failed to export data:\n{str(e)}")
-
-    def on_frame(self, qimg):
-        pix = QPixmap.fromImage(qimg)
-        target_w = self.ui.live_camera.width()
-        target_h = self.ui.live_camera.height()
-        scaled = pix.scaled(target_w, target_h, Qt.KeepAspectRatio)
-        self.ui.live_camera.setPixmap(scaled)
 
     def start_capture_cycle(self):
         self.captured_count = 0

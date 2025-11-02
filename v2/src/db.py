@@ -211,3 +211,28 @@ class CaptureDB:
 
             cur.close()
             conn.close()
+
+    def update_stripe_description(self, magazine_id, package_number, stripe_number, description):
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+
+            cur.execute(
+                "SELECT id FROM packages WHERE magazine_id = ? AND package_number = ?",
+                (magazine_id, package_number)
+            )
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                conn.close()
+                raise Exception(f"Package {package_number} not found for magazine {magazine_id}")
+
+            package_id = row[0]
+
+            cur.execute(
+                "UPDATE stripes SET description = ? WHERE package_id = ? AND stripe_number = ?",
+                (description, package_id, stripe_number)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
