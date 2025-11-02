@@ -31,5 +31,5 @@ try.py
 
 # Common unwanted files
 *.xlsx
-*.pdf
+
 .DS_Store
