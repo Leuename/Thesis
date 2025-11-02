@@ -1,0 +1,35 @@
+﻿# IDE / editor
+.idea/
+.vscode/
+workspace.xml
+
+# Python caches and bytecode
+__pycache__/
+*.pyc
+
+# Local history / IDE helpers
+.history/
+
+# DBs, model weights, large binaries
+*.db
+captures.db
+v3/src/captures.db
+
+# PyTorch / weights
+*.pt
+v3/src/best.pt
+v3/src/best(og).pt
+v2/src/best.pt
+
+# Backup / copy files (local copies)
+* copy.py
+*copy.py
+backend copy.py
+db copy.py
+frontend(og).py
+try.py
+
+# Common unwanted files
+*.xlsx
+*.pdf
+.DS_Store

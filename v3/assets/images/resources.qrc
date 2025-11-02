@@ -1,0 +1,33 @@
+<RCC>
+  <qresource>
+    <file>Fastech LOGO_black.png</file>
+    <file>white_logo.png</file>
+    <file>close_button.png</file>
+    <file>close_button_white.png</file>
+    <file>minimize_whitepng.png</file>
+    <file>minimize-sign.png</file>
+    <file>close_button.png</file>
+    <file>close_button_white.png</file>
+    <file>minimize_whitepng.png</file>
+    <file>minimize-sign.png</file>
+    <file>wires.png</file>
+    <file>export.png</file>
+    <file>pause.png</file>
+    <file>play.png</file>
+    <file>180(2).png</file>
+    <file>pinaliit240.png</file>
+    <file>pinaliit.png</file>
+    <file>pinaliit480.png</file>
+    <file>15(white).png</file>
+    <file>GUI FORMAT(white)(240).png</file>
+    <file>GUI FORMAT(white).png</file>
+    <file>image.png</file>
+    <file>GUI FORMAT.png</file>
+    <file>120.png</file>
+    <file>240000.png</file>
+    <file>420(1).png</file>
+    <file>420.png</file>
+    <file>600.png</file>
+    <file>240.png</file>
+  </qresource>
+</RCC>
