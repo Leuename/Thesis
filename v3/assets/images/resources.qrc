@@ -1,5 +1,7 @@
 <RCC>
   <qresource>
+    <file>delete (1).png</file>
+    <file>delete.png</file>
     <file>Fastech LOGO_black.png</file>
     <file>white_logo.png</file>
     <file>close_button.png</file>

@@ -1,8 +1,15 @@
 import sqlite3
 import threading
 from typing import Optional, List, Tuple
-
+import os  # <-- Add this import
+from appdirs import user_data_dir
 DB_PATH = "captures.db"
+APP_NAME = "IVIS"
+APP_AUTHOR = "Fastech"
+
+DATA_DIR = user_data_dir(APP_NAME, APP_AUTHOR)
+os.makedirs(DATA_DIR, exist_ok=True)
+
 
 class CaptureDB:
     def __init__(self):

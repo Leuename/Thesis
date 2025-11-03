@@ -21,7 +21,7 @@ class CameraInferenceThread(QThread):
     detections_ready = Signal(list)       # List of detected class names (strings)
     boxes_ready = Signal(list)             # List of dicts per box, e.g. {'xyxy': (x1,y1,x2,y2), 'cls': int, 'conf': float}
     
-    def __init__(self, camera_index: int, model_path: str, conf_thresh: float = 0.25, parent=None):
+    def __init__(self, camera_index: int, model_path: str, conf_thresh: float = 0.75, parent=None):
         super().__init__(parent)
         self.camera_index = camera_index
         self.model_path = model_path

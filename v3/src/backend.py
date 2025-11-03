@@ -15,6 +15,16 @@ from typing import *
 import numpy as np
 import xlsxwriter
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -28,9 +38,9 @@ class MainWindow(QMainWindow):
 
         self._reset_count = 0
         self.capture_db = CaptureDB()
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(script_dir, "best.pt")
-        self.thread = CameraInferenceThread(camera_index=0, model_path=model_path, conf_thresh=0.25)
+        model_path = resource_path("best.pt")
+        
+        self.thread = CameraInferenceThread(camera_index=1, model_path=model_path, conf_thresh=0.75)
         self.thread.frame_ready.connect(self.on_frame_ready)
         self.thread.detections_ready.connect(self.on_detections_ready)
 
